@@ -1,233 +1,340 @@
 #!/bin/bash
-# Installation script for semcode Claude plugin
+# Installation script for semcode MCP server
+# Supports: Claude Code, Cursor IDE, VS Code
 
-set -e
+set -eo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PLUGIN_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+SEMCODE_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 PLUGIN_NAME="semcode"
 MARKETPLACE_NAME="semcode-local"
 
-echo "=== Semcode Claude Plugin Installation ==="
+echo "=== Semcode MCP Server Installation ==="
 echo
 
-# Check if claude command exists
-if ! command -v claude &> /dev/null; then
-    echo "✗ Error: 'claude' command not found"
-    echo "  Please ensure Claude Code is installed and in your PATH"
-    exit 1
-fi
-
-echo "✓ Found claude command"
-echo
-
-# Check if semcode-mcp binary exists in PATH
+# -----------------------------------------------------------------------
+# Locate semcode-mcp binary
+# -----------------------------------------------------------------------
+MCP_PATH=""
 if command -v semcode-mcp &> /dev/null; then
-    MCP_BINARY="semcode-mcp"
-    MCP_PATH=$(command -v semcode-mcp)
-    echo "✓ Found semcode-mcp in PATH at: $MCP_PATH"
-elif [ -f "$SCRIPT_DIR/../../target/release/semcode-mcp" ]; then
-    echo "✗ Error: semcode-mcp found in target/release but not in PATH"
-    echo "  Please add semcode binaries to your PATH:"
-    echo "    export PATH=\"$SCRIPT_DIR/../../target/release:\$PATH\""
-    echo "  Or add to your ~/.bashrc or ~/.zshrc for permanent access"
+    MCP_PATH="$(command -v semcode-mcp)"
+    echo "Found semcode-mcp at: $MCP_PATH"
+elif [ -f "$SEMCODE_ROOT/target/release/semcode-mcp" ]; then
+    echo "Error: semcode-mcp found in target/release but not in PATH"
+    echo "  export PATH=\"$SEMCODE_ROOT/target/release:\$PATH\""
     exit 1
 else
-    echo "✗ Error: semcode-mcp binary not found"
-    echo "  Please build semcode first:"
-    echo "    cd $SCRIPT_DIR/../.. && cargo build --release"
-    echo "  Then add it to your PATH:"
-    echo "    export PATH=\"$SCRIPT_DIR/../../target/release:\$PATH\""
+    echo "Error: semcode-mcp binary not found"
+    echo "  cd $SEMCODE_ROOT && cargo build --release"
+    echo "  export PATH=\"$SEMCODE_ROOT/target/release:\$PATH\""
     exit 1
 fi
 
 echo
 
-# Step 1: Add marketplace
-echo "Step 1: Adding marketplace to Claude..."
-if claude plugin marketplace add "$PLUGIN_DIR/marketplace.json"; then
-    echo "✓ Marketplace added successfully"
-else
-    echo "⚠ Warning: Marketplace may already be added (this is OK)"
-fi
-
+# -----------------------------------------------------------------------
+# Step 1: Choose installation targets
+# -----------------------------------------------------------------------
+echo "Step 1: Choose installation targets"
+echo
+echo "  1. Claude Code only"
+echo "  2. Cursor IDE only"
+echo "  3. VS Code only"
+echo "  4. Cursor + VS Code"
+echo "  5. All (Claude Code + Cursor + VS Code)"
 echo
 
-# Step 2: Install plugin
-echo "Step 2: Installing plugin..."
-if claude plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME"; then
-    echo "✓ Plugin installed successfully"
-else
-    echo "⚠ Warning: Plugin may already be installed (this is OK)"
-fi
+read -p "Choice [1-5] (default: 5): " target_choice || true
+target_choice="${target_choice:-5}"
 
-echo
+INSTALL_CLAUDE=false
+INSTALL_CURSOR=false
+INSTALL_VSCODE=false
 
-# Step 3: Configure database
-echo "Step 3: Configure database location"
-echo
-echo "How do you want to configure the database location?"
-echo
-echo "Options:"
-echo "  1. Auto-detect from current directory (RECOMMENDED)"
-echo "     Uses ./.semcode.db from wherever you run Claude"
-echo "     Allows working with multiple projects"
-echo
-echo "  2. Specify a fixed absolute path"
-echo "     Always uses the same database regardless of where Claude runs"
-echo
-read -p "Enter choice [1-2]: " choice
-
-case $choice in
-    1)
-        DB_PATH=""
-        echo "✓ Will use ./.semcode.db from Claude's working directory"
-        ;;
-    2)
-        read -p "Enter full path to database or directory: " DB_PATH
-        # Expand tilde if present
-        DB_PATH="${DB_PATH/#\~/$HOME}"
-        if [ ! -d "$DB_PATH" ] && [ ! -d "$DB_PATH/.semcode.db" ]; then
-            echo "⚠ Warning: Path not found, but will proceed with configuration"
-        fi
-        ;;
-    *)
-        echo "Invalid choice, using auto-detect (option 1)"
-        DB_PATH=""
-        ;;
+case $target_choice in
+    1) INSTALL_CLAUDE=true ;;
+    2) INSTALL_CURSOR=true ;;
+    3) INSTALL_VSCODE=true ;;
+    4) INSTALL_CURSOR=true; INSTALL_VSCODE=true ;;
+    *) INSTALL_CLAUDE=true; INSTALL_CURSOR=true; INSTALL_VSCODE=true ;;
 esac
 
-# Update MCP configuration if database path is provided
-if [ -n "$DB_PATH" ]; then
-    MCP_CONFIG="$SCRIPT_DIR/mcp/semcode.json"
+# -----------------------------------------------------------------------
+# Step 2: Git repository path (Cursor / VS Code)
+# -----------------------------------------------------------------------
+GIT_REPO_PATH=""
+
+if $INSTALL_CURSOR || $INSTALL_VSCODE; then
     echo
-    echo "Updating MCP configuration at: $MCP_CONFIG"
-
-    # Create new config with database path
-    cat > "$MCP_CONFIG" << EOF
-{
-  "mcpServers": {
-    "semcode": {
-      "type": "stdio",
-      "command": "$MCP_BINARY",
-      "args": ["--database", "$DB_PATH"],
-      "env": {}
-    }
-  }
-}
-EOF
-    echo "✓ Configuration updated"
-else
-    # No database path specified, create config without --database arg
-    MCP_CONFIG="$SCRIPT_DIR/mcp/semcode.json"
+    echo "Step 2: Git repository path"
     echo
-    echo "Creating MCP configuration without database path: $MCP_CONFIG"
-
-    cat > "$MCP_CONFIG" << EOF
-{
-  "mcpServers": {
-    "semcode": {
-      "type": "stdio",
-      "command": "$MCP_BINARY",
-      "args": [],
-      "env": {}
-    }
-  }
-}
-EOF
-    echo "✓ Configuration created (will use working directory)"
-fi
-
-echo
-echo "=== Tool Approval (Optional) ==="
-echo
-echo "Would you like to pre-approve semcode tools for a specific directory?"
-echo "This will skip permission prompts when using semcode in that directory."
-echo
-read -p "Enter directory path (or press Enter to skip): " APPROVE_DIR
-
-if [ -n "$APPROVE_DIR" ]; then
-    # Expand tilde if present
-    APPROVE_DIR="${APPROVE_DIR/#\~/$HOME}"
-
-    # Normalize path
-    APPROVE_DIR=$(realpath "$APPROVE_DIR" 2>/dev/null || echo "$APPROVE_DIR")
-
+    echo "  Cursor and VS Code need a project-level mcp.json."
+    echo "  This is also where semcode-index typically creates .semcode.db."
     echo
-    echo "Pre-approving semcode tools for: $APPROVE_DIR"
 
-    # List of all semcode tools
-    TOOLS=(
-        "mcp__semcode__find_function"
-        "mcp__semcode__find_type"
-        "mcp__semcode__find_callers"
-        "mcp__semcode__find_calls"
-        "mcp__semcode__find_callchain"
-        "mcp__semcode__diff_functions"
-        "mcp__semcode__grep_functions"
-        "mcp__semcode__vgrep_functions"
-        "mcp__semcode__find_commit"
-        "mcp__semcode__vcommit_similar_commits"
-        "mcp__semcode__lore_search"
-        "mcp__semcode__dig"
-        "mcp__semcode__vlore_similar_emails"
-    )
+    read -p "Git repository path (e.g. ~/linux): " user_repo || true
+    user_repo="${user_repo:-}"
+    user_repo="${user_repo/#\~/$HOME}"
 
-    # Use jq to update the allowedTools array for the project
-    if command -v jq &> /dev/null; then
-        # Backup first
-        cp ~/.claude.json ~/.claude.json.backup
-
-        # Create a temporary file
-        TEMP_FILE=$(mktemp)
-
-        # Build the jq command to add tools
-        jq --arg dir "$APPROVE_DIR" \
-           --argjson tools "$(printf '%s\n' "${TOOLS[@]}" | jq -R . | jq -s .)" \
-           '.projects[$dir].allowedTools = ($tools + (.projects[$dir].allowedTools // []) | unique)' \
-           ~/.claude.json > "$TEMP_FILE"
-
-        # Replace the original file
-        mv "$TEMP_FILE" ~/.claude.json
-
-        echo "✓ Pre-approved all semcode tools for $APPROVE_DIR"
-        echo "✓ Backup saved to ~/.claude.json.backup"
+    if [ -z "$user_repo" ]; then
+        echo "No path given, skipping Cursor/VS Code setup."
+        INSTALL_CURSOR=false
+        INSTALL_VSCODE=false
     else
-        echo "⚠ Warning: jq not found, skipping tool pre-approval"
-        echo "  Install jq with: sudo apt-get install jq"
-        echo "  Or use: ./approve-tools.sh $APPROVE_DIR"
+        GIT_REPO_PATH="$(realpath "$user_repo" 2>/dev/null || echo "$user_repo")"
+        if [ ! -d "$GIT_REPO_PATH" ]; then
+            echo "Warning: $GIT_REPO_PATH does not exist yet, proceeding anyway."
+        fi
+        echo "Git repo: $GIT_REPO_PATH"
     fi
-else
-    echo "Skipped tool pre-approval"
-    echo "You can approve tools later with:"
-    echo "  $SCRIPT_DIR/approve-tools.sh /path/to/your/project"
 fi
 
+# Nothing left to install?
+if ! $INSTALL_CLAUDE && ! $INSTALL_CURSOR && ! $INSTALL_VSCODE; then
+    echo
+    echo "Nothing to install."
+    exit 0
+fi
+
+# -----------------------------------------------------------------------
+# Step 3: Configure database location
+#
+# Default to the git repo path (where semcode-index -s . creates .semcode.db).
+# Only ask if Cursor or VS Code is being installed (they need -d in mcp.json).
+# Claude Code doesn't need this -- review_one.sh handles it at runtime.
+# -----------------------------------------------------------------------
+SEMCODE_DB=""
+
+if $INSTALL_CURSOR || $INSTALL_VSCODE; then
+    SEMCODE_DB="$GIT_REPO_PATH"
+
+    echo
+    echo "Step 3: Configure database location"
+    echo
+    echo "  Default: $SEMCODE_DB"
+    if [ -d "$SEMCODE_DB/.semcode.db" ]; then
+        echo "  Database exists at $SEMCODE_DB/.semcode.db"
+    else
+        echo "  Database not found yet -- run 'semcode-index -s $SEMCODE_DB' to create it."
+    fi
+    echo
+    echo "  1. Use default: $SEMCODE_DB"
+    echo "  2. Specify a different path"
+    echo
+
+    read -p "Choice [1-2] (default: 1): " db_choice || true
+    db_choice="${db_choice:-1}"
+
+    case $db_choice in
+        2)
+            read -p "Full path to database directory: " user_db || true
+            user_db="${user_db:-}"
+            if [ -z "$user_db" ]; then
+                echo "  No path given, using default."
+            else
+                user_db="${user_db/#\~/$HOME}"
+                SEMCODE_DB="$(realpath "$user_db" 2>/dev/null || echo "$user_db")"
+            fi
+            ;;
+    esac
+
+    echo "Database: $SEMCODE_DB"
+    echo
+fi
+
+# -----------------------------------------------------------------------
+# Write or merge an mcp.json with semcode server config.
+# Uses -d and --git-repo explicitly so semcode-mcp doesn't rely on
+# auto-detection from the working directory.
+# If the file exists and jq is available, merge to preserve other servers.
+#
+#   write_mcp_json <dir>
+# -----------------------------------------------------------------------
+write_mcp_json() {
+    local target_dir="$1"
+
+    mkdir -p "$target_dir"
+    local target_file="$target_dir/mcp.json"
+    local semcode_entry
+    semcode_entry=$(cat <<INNEREOF
+{
+  "mcpServers": {
+    "semcode": {
+      "command": "$MCP_PATH",
+      "args": ["-d", "$SEMCODE_DB", "--git-repo", "$GIT_REPO_PATH"]
+    }
+  }
+}
+INNEREOF
+)
+
+    if [ -f "$target_file" ] && command -v jq &> /dev/null; then
+        local backup
+        backup="$(mktemp "$target_file.bak.XXXXXX")"
+        cp "$target_file" "$backup"
+
+        local tmp
+        tmp="$(mktemp)"
+        if jq --arg cmd "$MCP_PATH" \
+              --arg db "$SEMCODE_DB" \
+              --arg repo "$GIT_REPO_PATH" \
+              '.mcpServers.semcode = {"command": $cmd, "args": ["-d", $db, "--git-repo", $repo]}' \
+              "$backup" > "$tmp"; then
+            mv "$tmp" "$target_file"
+            echo "  Merged semcode into existing $target_file"
+        else
+            rm -f "$tmp"
+            echo "  jq merge failed, restoring backup"
+            cp "$backup" "$target_file"
+        fi
+        echo "  Backup: $backup"
+    else
+        echo "$semcode_entry" > "$target_file"
+        echo "  Created $target_file"
+    fi
+}
+
+# -----------------------------------------------------------------------
+# Claude Code
+# -----------------------------------------------------------------------
+if $INSTALL_CLAUDE; then
+    echo
+    echo "=== Claude Code Setup ==="
+    echo
+
+    if ! command -v claude &> /dev/null; then
+        echo "'claude' command not found, skipping Claude Code setup."
+        echo "  Install Claude Code and re-run to enable."
+    else
+        echo "Found claude command"
+
+        echo "  Adding marketplace..."
+        if claude plugin marketplace add "$PLUGIN_DIR/marketplace.json" 2>/dev/null; then
+            echo "  Marketplace added"
+        else
+            echo "  Marketplace may already be added (OK)"
+        fi
+
+        echo "  Installing plugin..."
+        if claude plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME" 2>/dev/null; then
+            echo "  Plugin installed"
+        else
+            echo "  Plugin may already be installed (OK)"
+        fi
+
+        MCP_CONFIG="$SCRIPT_DIR/mcp/semcode.json"
+        mkdir -p "$(dirname "$MCP_CONFIG")"
+
+        cat > "$MCP_CONFIG" << EOF
+{
+  "mcpServers": {
+    "semcode": {
+      "command": "$MCP_PATH"
+    }
+  }
+}
+EOF
+        echo "  Claude MCP config: $MCP_CONFIG"
+    fi
+fi
+
+# -----------------------------------------------------------------------
+# Cursor IDE
+# -----------------------------------------------------------------------
+if $INSTALL_CURSOR; then
+    echo
+    echo "=== Cursor IDE Setup ==="
+    echo
+
+    write_mcp_json "$GIT_REPO_PATH/.cursor"
+fi
+
+# -----------------------------------------------------------------------
+# VS Code
+# -----------------------------------------------------------------------
+if $INSTALL_VSCODE; then
+    echo
+    echo "=== VS Code Setup ==="
+    echo
+
+    write_mcp_json "$GIT_REPO_PATH/.vscode"
+fi
+
+# -----------------------------------------------------------------------
+# Tool approval (Claude Code only)
+# -----------------------------------------------------------------------
+if $INSTALL_CLAUDE; then
+    echo
+    echo "=== Tool Approval (Claude Code, Optional) ==="
+    echo
+    echo "Pre-approve semcode tools for a directory to skip permission prompts?"
+    echo
+    read -p "Directory path (or Enter to skip): " APPROVE_DIR || true
+    APPROVE_DIR="${APPROVE_DIR:-}"
+
+    if [ -n "$APPROVE_DIR" ]; then
+        APPROVE_DIR="${APPROVE_DIR/#\~/$HOME}"
+        APPROVE_DIR="$(realpath "$APPROVE_DIR" 2>/dev/null || echo "$APPROVE_DIR")"
+
+        TOOLS=(
+            "mcp__semcode__find_function"
+            "mcp__semcode__find_type"
+            "mcp__semcode__find_callers"
+            "mcp__semcode__find_calls"
+            "mcp__semcode__find_callchain"
+            "mcp__semcode__diff_functions"
+            "mcp__semcode__grep_functions"
+            "mcp__semcode__vgrep_functions"
+            "mcp__semcode__find_commit"
+            "mcp__semcode__vcommit_similar_commits"
+            "mcp__semcode__lore_search"
+            "mcp__semcode__dig"
+            "mcp__semcode__vlore_similar_emails"
+        )
+
+        if ! command -v jq &> /dev/null; then
+            echo "jq not found, skipping tool pre-approval."
+            echo "  Install jq, then run: $SCRIPT_DIR/approve-tools.sh $APPROVE_DIR"
+        elif [ ! -f ~/.claude.json ]; then
+            echo "~/.claude.json not found (run Claude Code once first)."
+            echo "  Then run: $SCRIPT_DIR/approve-tools.sh $APPROVE_DIR"
+        else
+            cp ~/.claude.json ~/.claude.json.backup
+            TEMP_FILE="$(mktemp)"
+
+            if jq --arg dir "$APPROVE_DIR" \
+                  --argjson tools "$(printf '%s\n' "${TOOLS[@]}" | jq -R . | jq -s .)" \
+                  '.projects[$dir].allowedTools = ($tools + (.projects[$dir].allowedTools // []) | unique)' \
+                  ~/.claude.json > "$TEMP_FILE"; then
+                mv "$TEMP_FILE" ~/.claude.json
+                echo "Pre-approved semcode tools for $APPROVE_DIR"
+                echo "  Backup: ~/.claude.json.backup"
+            else
+                rm -f "$TEMP_FILE"
+                echo "jq failed, ~/.claude.json not modified."
+            fi
+        fi
+    else
+        echo "Skipped."
+    fi
+fi
+
+# -----------------------------------------------------------------------
+# Summary
+# -----------------------------------------------------------------------
 echo
-echo "=== Installation Complete! ==="
+echo "=== Installation Complete ==="
 echo
-echo "Next steps:"
-echo "1. Restart Claude Code if it's currently running"
-echo "2. Verify installation by asking Claude:"
-echo "   'What semcode tools do you have access to?'"
-echo
-echo "You should see tools like:"
-echo "  - find_function"
-echo "  - find_type"
-echo "  - find_callers"
-echo "  - find_callees"
-echo "  - grep_functions"
-echo "  - find_commit"
-echo
-echo "For usage examples and tool reference, see:"
-echo "  $SCRIPT_DIR/../../docs/semcode-mcp.md"
-echo
-echo "To reconfigure the database path, edit:"
-echo "  $SCRIPT_DIR/mcp/semcode.json"
-echo
-echo "To pre-approve tools for additional directories:"
-echo "  $SCRIPT_DIR/approve-tools.sh /path/to/directory"
+echo "Binary: $MCP_PATH"
+[ -n "$SEMCODE_DB" ] && echo "Database: $SEMCODE_DB"
 echo
 
+$INSTALL_CLAUDE && echo "Claude Code: $SCRIPT_DIR/mcp/semcode.json" || true
+$INSTALL_CURSOR && echo "Cursor:      $GIT_REPO_PATH/.cursor/mcp.json" || true
+$INSTALL_VSCODE && echo "VS Code:     $GIT_REPO_PATH/.vscode/mcp.json" || true
+
 echo
-echo "Installation complete!"
+echo "Restart any running editors for the changes to take effect."
+echo
+echo "Docs: $SEMCODE_ROOT/docs/semcode-mcp.md"
